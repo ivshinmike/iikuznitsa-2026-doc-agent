@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Служба качества · Primelab Knowledge Agent</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<main>
+  <a href="/">К вопросам</a>
+  <h1>Служба качества</h1>
+  <form id="lookup">
+    <label for="key">Ключ сотрудника</label>
+    <input id="key" type="password" autocomplete="off" required>
+    <label for="case-id">Номер запроса</label>
+    <input id="case-id" pattern="[0-9a-f]{32}" required>
+    <button>Открыть запрос</button>
+  </form>
+  <div id="status" role="status"></div>
+  <form id="review" hidden>
+    <p id="original"></p>
+    <label for="point">Связанный пункт регламента</label>
+    <select id="point" required></select>
+    <label for="resolution">Подтверждённый ответ</label>
+    <textarea id="resolution" rows="5" minlength="5" maxlength="3000" required></textarea>
+    <button>Подтвердить и добавить в базу знаний</button>
+  </form>
+</main>
+<script>
+  const get = (id) => document.getElementById(id);
+  const review = get('review');
+  const status = get('status');
+  let opened = null;
+  async function request(path, body) {
+    const headers = {'X-Quality-Key': get('key').value};
+    if (body) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path, {method: body ? 'POST' : 'GET', headers, body: body && JSON.stringify(body)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Проверьте заполнение полей.');
+    return data;
+  }
+  get('lookup').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    button.disabled = true;
+    review.hidden = true;
+    opened = null;
+    try {
+      const data = await request(`/quality/case/${get('case-id').value}`);
+      opened = data.case.id;
+      get('original').textContent = data.case.question;
+      const options = data.points.map((point) => new Option(`${point.document} · п. ${point.point}`, JSON.stringify(point)));
+      get('point').replaceChildren(new Option('Выберите пункт', ''), ...options);
+      get('resolution').value = data.case.resolution || '';
+      status.textContent = data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
+      review.hidden = false;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  review.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = review.querySelector('button');
+    button.disabled = true;
+    try {
+      const {document, point} = JSON.parse(get('point').value);
+      await request('/quality/approve', {case_id: opened, document, point, resolution: get('resolution').value});
+      status.textContent = 'Ответ подтверждён и добавлен в локальную базу знаний.';
+      review.hidden = true;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

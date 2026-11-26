@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -29,6 +30,12 @@ SYSTEM = """Ты проверяешь, содержится ли ответ на
 missing. Если не хватает условий, чтобы выбрать между действительно разными вариантами,
 верни clarify. Для missing и clarify список selections пуст. Запрещено додумывать."""
 MISSING = "В доступных источниках нет подтверждённого ответа. Обратитесь в службу качества."
+CONTACT_PATTERNS = (
+    (re.compile(r"\bномер\w*\s+телефон\w*|\bпо\s+какому\s+телефон\w*", re.I),
+     re.compile(r"(?<!\w)(?:\+?\d[ ()-]*){7,15}(?!\d)")),
+    (re.compile(r"\bкако\w*\s+(?:электронн\w*\s+)?(?:email|e-mail|адрес\w*\s+электронн\w*\s+почт\w*)", re.I),
+     re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I)),
+)
 
 
 def selection(question, candidates):
@@ -80,4 +87,7 @@ def answer(database, question, unit, choose=selection):
                 sources.append(cited)
     except (OSError, URLError, ValueError, KeyError, TypeError):
         return {"status": "unavailable", "message": "Сейчас не удалось проверить ответ по источникам. Повторите запрос позже."}
+    for requested, pattern in CONTACT_PATTERNS:
+        if requested.search(question) and not any(pattern.search(item["quote"]) for item in sources):
+            return {"status": "missing", "message": MISSING}
     return {"status": "answer", "message": "Выдержки из регламентов", "sources": sources}

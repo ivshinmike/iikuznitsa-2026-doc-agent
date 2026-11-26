@@ -1,0 +1,105 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #edf1ee;
+  color: #162922;
+  font: 16px/1.55 system-ui, sans-serif;
+}
+
+main {
+  max-width: 780px;
+  margin: 7vh auto;
+  padding: 0 20px 36px;
+}
+
+h1 {
+  font-size: clamp(28px, 5vw, 42px);
+  line-height: 1.13;
+  letter-spacing: -.045em;
+  margin: 18px 0 28px;
+}
+
+form, article {
+  padding: clamp(16px, 4vw, 26px);
+  background: white;
+  border: 1px solid #dbe4df;
+  border-radius: 14px;
+  margin-bottom: 16px;
+}
+
+label {
+  display: block;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+input, select, textarea, button {
+  font: inherit;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #93a99d;
+  border-radius: 8px;
+  background: white;
+  color: inherit;
+  margin-bottom: 16px;
+}
+
+button {
+  background: #145847;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+button:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
+blockquote {
+  margin: 8px 0 20px;
+  padding-left: 16px;
+  border-left: 3px solid #70a387;
+  white-space: pre-wrap;
+}
+
+.source {
+  font-size: .92rem;
+  color: #285747;
+}
+
+.choices {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.prompt {
+  font-weight: 650;
+  margin-bottom: 7px;
+}
+
+.reset {
+  background: #345746;
+  margin-left: 6px;
+}
+
+:focus-visible {
+  outline: 3px solid #2c8c70;
+  outline-offset: 2px;
+}
+
+article h2 {
+  font-size: 19px;
+  margin-top: 0;
+}
