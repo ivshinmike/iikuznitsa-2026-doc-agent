@@ -24,6 +24,9 @@
     <select id="point" required></select>
     <label for="resolution">Подтверждённый ответ</label>
     <textarea id="resolution" rows="5" minlength="5" maxlength="3000" required></textarea>
+    <label for="alternative">Альтернативная формулировка</label>
+    <input id="alternative" maxlength="1400" aria-describedby="alternative-hint">
+    <p id="alternative-hint">Необязательно. Укажите вопрос с тем же смыслом для этого подразделения.</p>
     <button>Подтвердить и добавить в базу знаний</button>
   </form>
 </main>
@@ -53,6 +56,7 @@
       const options = data.points.map((point) => new Option(`${point.document} · п. ${point.point}`, JSON.stringify(point)));
       get('point').replaceChildren(new Option('Выберите пункт', ''), ...options);
       get('resolution').value = data.case.resolution || '';
+      get('alternative').value = data.case.alternative || '';
       status.textContent = data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
       review.hidden = false;
     } catch (error) {
@@ -67,7 +71,10 @@
     button.disabled = true;
     try {
       const {document, point} = JSON.parse(get('point').value);
-      await request('/quality/approve', {case_id: opened, document, point, resolution: get('resolution').value});
+      await request('/quality/approve', {
+        case_id: opened, document, point, resolution: get('resolution').value,
+        alternative: get('alternative').value.trim() || null,
+      });
       status.textContent = 'Ответ подтверждён и добавлен в локальную базу знаний.';
       review.hidden = true;
     } catch (error) {

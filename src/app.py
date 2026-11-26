@@ -33,6 +33,7 @@ class Review(BaseModel):
     resolution: str = Field(min_length=5, max_length=3000)
     document: str = Field(min_length=2, max_length=240)
     point: str = Field(pattern=r"^\d+(?:\.\d+)*$", max_length=30)
+    alternative: str | None = Field(default=None, max_length=1400)
 
 
 def with_quality(database, question, unit):
@@ -88,7 +89,7 @@ def review_case(case_id: str, x_quality_key: str | None = Header(default=None)):
 def confirm_review(review: Review, x_quality_key: str | None = Header(default=None)):
     check_reviewer(x_quality_key)
     try:
-        approve(DATABASE, review.case_id, review.resolution, review.document, review.point)
+        approve(DATABASE, review.case_id, review.resolution, review.document, review.point, review.alternative)
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
     except FileExistsError as error:

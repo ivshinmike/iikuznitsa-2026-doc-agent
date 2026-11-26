@@ -106,3 +106,38 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(client.post("/quality/approve", json=review,
                                          headers={"X-Quality-Key": "test-reviewer-key"}).status_code, 200)
             self.assertEqual(client.post("/ask", json=request).json()["status"], "approved")
+
+    def test_approved_alternative_reuses_case_but_respects_rights_scope_and_revision(self):
+        original = "Где взять билет на экскурсию?"
+        alternative = "Как получить пропуск на экскурсию?"
+        different = "Как вернуть билет на экскурсию?"
+        def ask(client, question, unit="technical"):
+            return client.post("/ask", json={"question": question, "unit": unit}).json()
+        with patch.object(application, "DATABASE", self.database), patch.dict(
+            "os.environ", {"IIKUZNITSA_QUALITY_KEY": "test-reviewer-key"}
+        ), TestClient(application.app) as client:
+            initial = ask(client, original)
+            self.assertEqual(initial["status"], "missing")
+            alt_case = ask(client, alternative)
+            self.assertEqual(alt_case["status"], "missing")
+            self.assertNotEqual(initial["case_id"], alt_case["case_id"])
+            review = dict(case_id=initial["case_id"], resolution="Синтетическое подтверждение",
+                          document="Синтетический регламент", point="2.1", alternative=alternative)
+            headers = {"X-Quality-Key": "test-reviewer-key"}
+            self.assertEqual(client.post("/quality/approve", json=review).status_code, 403)
+            self.assertEqual(client.post("/quality/approve", json=dict(review, alternative="Где взять билет в ДБРЦТ?"),
+                                         headers=headers).status_code, 400)
+            self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 200)
+            result = ask(client, alternative.upper().rstrip("?"))
+            self.assertEqual(result, ask(client, original))
+            self.assertEqual(result["case_id"], initial["case_id"])
+            self.assertEqual(result["message"], "Ответ подтверждён службой качества")
+            self.assertEqual(result["sources"][0]["point"], "2.1")
+            self.assertEqual(ask(client, different)["status"], "missing")
+            self.assertEqual(ask(client, alternative, "security")["status"], "missing")
+            conflicting = dict(review, case_id=alt_case["case_id"], alternative=None)
+            self.assertEqual(client.post("/quality/approve", json=conflicting, headers=headers).status_code, 409)
+            with connect(self.database) as db:
+                db.execute("UPDATE passages SET revision='v2'")
+            self.assertEqual(ask(client, original)["status"], "missing")
+            self.assertEqual(ask(client, alternative)["status"], "missing")
