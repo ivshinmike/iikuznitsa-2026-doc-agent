@@ -1,8 +1,9 @@
 import json
+import logging
 import os
 import re
 from urllib.error import URLError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .corpus import normalize, search, terms
 
@@ -30,12 +31,18 @@ SYSTEM = """Ты проверяешь, содержится ли ответ на
 missing. Если не хватает условий, чтобы выбрать между действительно разными вариантами,
 верни clarify. Для missing и clarify список selections пуст. Запрещено додумывать."""
 MISSING = "В доступных источниках нет подтверждённого ответа. Обратитесь в службу качества."
+LOGGER = logging.getLogger("uvicorn.error")
 CONTACT_PATTERNS = (
     (re.compile(r"\bномер\w*\s+телефон\w*|\bпо\s+какому\s+телефон\w*", re.I),
      re.compile(r"(?<!\w)(?:\+?\d[ ()-]*){7,15}(?!\d)")),
     (re.compile(r"\bкако\w*\s+(?:электронн\w*\s+)?(?:email|e-mail|адрес\w*\s+электронн\w*\s+почт\w*)", re.I),
      re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I)),
 )
+
+
+class NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def selection(question, candidates):
@@ -48,8 +55,12 @@ def selection(question, candidates):
     request = Request("http://127.0.0.1:11434/api/generate",
                       data=json.dumps(payload, ensure_ascii=False).encode(),
                       headers={"Content-Type": "application/json"})
-    with build_opener(ProxyHandler({})).open(request, timeout=100) as response:
-        return json.loads(json.load(response)["response"])
+    with build_opener(ProxyHandler({}), NoRedirects()).open(request, timeout=100) as response:
+        generated = json.load(response)
+    LOGGER.info("Ollama loopback model=%s total_ns=%s prompt_tokens=%s output_tokens=%s",
+                payload["model"], generated.get("total_duration"), generated.get("prompt_eval_count"),
+                generated.get("eval_count"))
+    return json.loads(generated["response"])
 
 
 def answer(database, question, unit, choose=selection):
@@ -77,9 +88,9 @@ def answer(database, question, unit, choose=selection):
             return {"status": "missing", "message": MISSING}
         sources = []
         for item in selections:
-            source = by_id[item["id"]]
+            source = by_id.get(item["id"])
             quote = normalize(item["quote"])
-            if len(quote) < 20 or quote not in source["body"]:
+            if source is None or len(quote) < 20 or quote not in source["body"]:
                 return {"status": "missing", "message": MISSING}
             cited = {key: source[key] for key in ("document", "point", "heading", "unit", "revision")}
             cited["quote"] = quote

@@ -1,7 +1,11 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from src import app as application
 from src.answers import answer
 from src.corpus import connect, numbered, prepare, terms
 from src.dialogue import prepare_dialogue, resolve
@@ -41,6 +45,15 @@ class WorkflowTest(unittest.TestCase):
         contact = "Какой номер телефона у ответственного исполнителя заявки?"
         self.assertEqual(answer(self.database, contact, "technical", selector)["status"], "missing")
 
+    def test_fabricated_source_id_fails_closed(self):
+        question = "Кто назначает ответственного исполнителя заявки?"
+        def invented(_, candidates):
+            self.assertEqual(len(candidates), 1)
+            return {"status": "answer", "selections": [{"id": 9001, "quote": self.quote}]}
+        result = answer(self.database, question, "technical", invented)
+        self.assertEqual(result["status"], "missing")
+        self.assertNotIn("sources", result)
+
     def test_scope_clarification_retains_question_and_consumes_token(self):
         question = "Кто назначает ответственного исполнителя заявки?"
         def stub(_, context, unit):
@@ -51,6 +64,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(pending["status"], "clarify")
         self.assertEqual(resolve(self.database, "", "technical", pending["turn"], stub)["status"], "answer")
         self.assertEqual(resolve(self.database, "", "security", pending["turn"], stub)["status"], "expired")
+
+    def test_mixed_scope_asks_instead_of_searching(self):
+        def unexpected(*args):
+            self.fail("Search must wait for a single subdivision")
+        pending = resolve(self.database, "Кто отвечает в ДБРЦТ и Дирекции ИБ?", None, None, unexpected)
+        self.assertEqual(pending["mode"], "scope")
+        self.assertEqual(set(pending["options"]), {"dbrct", "security", "technical"})
 
     def test_review_requires_a_same_department_source_and_its_revision(self):
         question = "Какой номер у справочной службы?"
@@ -65,3 +85,24 @@ class WorkflowTest(unittest.TestCase):
         with connect(self.database) as db:
             db.execute("UPDATE passages SET revision='v2'")
         self.assertIsNone(find_approval(self.database, question, "technical"))
+
+    def test_http_question_user_cannot_open_or_approve_quality_case(self):
+        question = "Где взять билет на экскурсию?"
+        with patch.object(application, "DATABASE", self.database), patch.dict(
+            "os.environ", {"IIKUZNITSA_QUALITY_KEY": "test-reviewer-key"}
+        ), TestClient(application.app) as client:
+            request = {"question": question, "unit": "technical"}
+            result = client.post("/ask", json=request).json()
+            self.assertEqual(result["status"], "missing")
+            self.assertNotIn("sources", result)
+            case = result["case_id"]
+            self.assertEqual(client.get(f"/quality/case/{case}").status_code, 403)
+            review = dict(case_id=case, resolution="Синтетическое подтверждение",
+                          document="Синтетический регламент", point="2.1")
+            self.assertEqual(client.post("/quality/approve", json=review).status_code, 403)
+            self.assertEqual(client.post("/quality/approve", json=review,
+                                         headers={"X-Quality-Key": "wrong"}).status_code, 403)
+            self.assertEqual(client.post("/ask", json=request).json()["status"], "missing")
+            self.assertEqual(client.post("/quality/approve", json=review,
+                                         headers={"X-Quality-Key": "test-reviewer-key"}).status_code, 200)
+            self.assertEqual(client.post("/ask", json=request).json()["status"], "approved")
