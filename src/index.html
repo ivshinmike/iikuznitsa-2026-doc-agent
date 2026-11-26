@@ -11,6 +11,7 @@
     label{display:block;font-weight:650;margin-bottom:6px} input,select,textarea,button{font:inherit} select,textarea,input{width:100%;padding:10px 12px;border:1px solid #93a99d;border-radius:8px;background:#fff;color:inherit;margin-bottom:16px}
     button{background:#145847;color:white;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:650} button:disabled{opacity:.55;cursor:wait}
     blockquote{margin:8px 0 20px;padding-left:16px;border-left:3px solid #70a387;white-space:pre-wrap} .source{font-size:.92rem;color:#285747}
+    .choices{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0} .prompt{font-weight:650;margin-bottom:7px} .reset{background:#345746;margin-left:6px}
     :focus-visible{outline:3px solid #2c8c70;outline-offset:2px} article h2{font-size:19px;margin-top:0}
   </style>
 </head>
@@ -19,20 +20,23 @@
   <h1>Ответы по корпоративным регламентам</h1>
   <form id="ask">
     <label for="unit">Подразделение</label>
-    <select id="unit" required>
-      <option value="">Выберите подразделение</option>
+    <select id="unit">
+      <option value="">Определить по вопросу</option>
       <option value="dbrct">ДБРЦТ</option><option value="security">Дирекция ИБ</option>
       <option value="technical">Техническая дирекция</option>
     </select>
     <label for="question">Ваш вопрос</label>
     <textarea id="question" rows="3" maxlength="1400" minlength="2" required></textarea>
     <button type="submit">Найти ответ</button>
+    <button type="button" class="reset" id="reset" hidden>Новый вопрос</button>
   </form>
   <section id="result" aria-live="polite"></section>
 </main>
 <script>
   const form = document.querySelector('#ask');
   const output = document.querySelector('#result');
+  const reset = document.querySelector('#reset');
+  let turn = null;
   function add(parent, tag, text, className) {
     const item = document.createElement(tag);
     item.textContent = text;
@@ -40,19 +44,37 @@
     parent.append(item);
     return item;
   }
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const button = form.querySelector('button');
+  async function ask(question, unit) {
+    const button = form.querySelector('[type=submit]');
+    if (button.disabled) return;
     button.disabled = true;
-    output.replaceChildren();
+    reset.hidden = false;
+    if (!turn) output.replaceChildren();
     const card = add(output, 'article', 'Проверяем регламенты…');
     try {
-      const body = {question: form.question.value.trim(), unit: form.unit.value};
+      const body = {question, unit: unit || null, turn};
       const response = await fetch('/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
       if (!response.ok) throw new Error();
       const result = await response.json();
       card.replaceChildren();
+      if (question || unit) add(card, 'div', question || form.unit.selectedOptions[0].textContent, 'prompt');
       add(card, 'h2', result.message);
+      turn = result.turn || null;
+      form.question.value = '';
+      form.querySelector('label[for=question]').textContent = turn ? 'Ваше уточнение' : 'Ваш вопрос';
+      button.textContent = turn ? 'Отправить уточнение' : 'Найти ответ';
+      if (result.options) {
+        const choices = add(card, 'div', '', 'choices');
+        for (const [key, label] of Object.entries(result.options)) {
+          const choice = add(choices, 'button', label);
+          choice.type = 'button';
+          choice.addEventListener('click', () => {
+            if (!turn || card !== output.lastElementChild) return;
+            form.unit.value = key;
+            ask('', key);
+          });
+        }
+      }
       for (const source of result.sources || []) {
         add(card, 'div', `${source.document} · п. ${source.point} · ${source.heading}`, 'source');
         add(card, 'blockquote', source.quote);
@@ -62,6 +84,20 @@
     } finally {
       button.disabled = false;
     }
+  }
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    ask(form.question.value.trim(), form.unit.value);
+  });
+  reset.addEventListener('click', () => {
+    if (form.querySelector('[type=submit]').disabled) return;
+    turn = null;
+    output.replaceChildren();
+    form.reset();
+    form.querySelector('label[for=question]').textContent = 'Ваш вопрос';
+    form.querySelector('[type=submit]').textContent = 'Найти ответ';
+    reset.hidden = true;
+    form.question.focus();
   });
 </script>
 </body>
