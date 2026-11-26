@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Primelab Knowledge Agent</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;background:#edf1ee;color:#162922;font:16px/1.55 system-ui,sans-serif}
+    main{max-width:780px;margin:7vh auto;padding:0 20px 36px} h1{font-size:clamp(28px,5vw,42px);line-height:1.13;letter-spacing:-.045em;margin:18px 0 28px}
+    form,article{padding:clamp(16px,4vw,26px);background:white;border:1px solid #dbe4df;border-radius:14px;margin-bottom:16px}
+    label{display:block;font-weight:650;margin-bottom:6px} input,select,textarea,button{font:inherit} select,textarea,input{width:100%;padding:10px 12px;border:1px solid #93a99d;border-radius:8px;background:#fff;color:inherit;margin-bottom:16px}
+    button{background:#145847;color:white;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:650} button:disabled{opacity:.55;cursor:wait}
+    blockquote{margin:8px 0 20px;padding-left:16px;border-left:3px solid #70a387;white-space:pre-wrap} .source{font-size:.92rem;color:#285747}
+    :focus-visible{outline:3px solid #2c8c70;outline-offset:2px} article h2{font-size:19px;margin-top:0}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Ответы по корпоративным регламентам</h1>
+  <form id="ask">
+    <label for="unit">Подразделение</label>
+    <select id="unit" required>
+      <option value="">Выберите подразделение</option>
+      <option value="dbrct">ДБРЦТ</option><option value="security">Дирекция ИБ</option>
+      <option value="technical">Техническая дирекция</option>
+    </select>
+    <label for="question">Ваш вопрос</label>
+    <textarea id="question" rows="3" maxlength="1400" minlength="2" required></textarea>
+    <button type="submit">Найти ответ</button>
+  </form>
+  <section id="result" aria-live="polite"></section>
+</main>
+<script>
+  const form = document.querySelector('#ask');
+  const output = document.querySelector('#result');
+  function add(parent, tag, text, className) {
+    const item = document.createElement(tag);
+    item.textContent = text;
+    if (className) item.className = className;
+    parent.append(item);
+    return item;
+  }
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button');
+    button.disabled = true;
+    output.replaceChildren();
+    const card = add(output, 'article', 'Проверяем регламенты…');
+    try {
+      const body = {question: form.question.value.trim(), unit: form.unit.value};
+      const response = await fetch('/ask', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      if (!response.ok) throw new Error();
+      const result = await response.json();
+      card.replaceChildren();
+      add(card, 'h2', result.message);
+      for (const source of result.sources || []) {
+        add(card, 'div', `${source.document} · п. ${source.point} · ${source.heading}`, 'source');
+        add(card, 'blockquote', source.quote);
+      }
+    } catch {
+      card.textContent = 'Сейчас не удалось проверить ответ. Повторите запрос позже.';
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
