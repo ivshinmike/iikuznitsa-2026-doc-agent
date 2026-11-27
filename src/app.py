@@ -8,9 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .answers import answer
-from .corpus import UNITS, prepare
-from .dialogue import prepare_dialogue, resolve
+from .corpus import UNITS, normalize, prepare
+from .dialogue import infer_unit, prepare_dialogue, resolve
 from .quality import approve, find_approval, get_case, open_case, prepare_quality
+from .quality_mail import notify
 
 
 DATABASE = Path(os.environ.get("IIKUZNITSA_DB", "data/knowledge.sqlite"))
@@ -34,6 +35,12 @@ class Review(BaseModel):
     document: str = Field(min_length=2, max_length=240)
     point: str = Field(pattern=r"^\d+(?:\.\d+)*$", max_length=30)
     alternative: str | None = Field(default=None, max_length=1400)
+    conflict_note: str | None = Field(default=None, max_length=1000)
+
+
+class ReviewQuestion(BaseModel):
+    question: str = Field(min_length=2, max_length=1400)
+    unit: str
 
 
 def with_quality(database, question, unit):
@@ -44,6 +51,7 @@ def with_quality(database, question, unit):
     if result["status"] == "missing":
         result["case_id"] = open_case(database, question, unit)
         result["message"] = "В регламентах нет подтверждённого ответа. Запрос в службу качества создан."
+        result["mail_state"] = notify(database, result["case_id"])
     return result
 
 
@@ -85,11 +93,24 @@ def review_case(case_id: str, x_quality_key: str | None = Header(default=None)):
         raise HTTPException(404, str(error)) from error
 
 
+@app.post("/quality/review")
+def open_review(review: ReviewQuestion, x_quality_key: str | None = Header(default=None)):
+    check_reviewer(x_quality_key)
+    question = normalize(review.question)
+    if review.unit not in UNITS or len(question) < 2:
+        raise HTTPException(400, "Укажите вопрос и подразделение")
+    if infer_unit(question) - {review.unit}:
+        raise HTTPException(400, "Вопрос относится к другому подразделению")
+    return {"case_id": open_case(DATABASE, question, review.unit)}
+
+
 @app.post("/quality/approve")
 def confirm_review(review: Review, x_quality_key: str | None = Header(default=None)):
     check_reviewer(x_quality_key)
     try:
-        approve(DATABASE, review.case_id, review.resolution, review.document, review.point, review.alternative)
+        reviewer = normalize(os.environ.get("IIKUZNITSA_QUALITY_REVIEWER") or "") or "Служба качества"
+        approve(DATABASE, review.case_id, review.resolution, review.document, review.point, review.alternative,
+                reviewer=reviewer, conflict_note=review.conflict_note)
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
     except FileExistsError as error:

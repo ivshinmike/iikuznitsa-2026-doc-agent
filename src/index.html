@@ -51,6 +51,20 @@
       if (question || unit) add(card, 'div', question || form.unit.selectedOptions[0].textContent, 'prompt');
       add(card, 'h2', result.message);
       if (result.answer) add(card, 'p', result.answer);
+      if (result.reviewer && result.applicability) {
+        const scope = result.applicability;
+        add(card, 'p', 'Подтвердил: ' + result.reviewer + ' · ' + result.approved_at + ' UTC', 'source');
+        add(card, 'p', scope.subdivision + ' · ' + scope.match + ' · редакция ' + scope.revision.slice(0, 12), 'source');
+      }
+      if (result.conflict) {
+        add(card, 'h3', 'Есть расхождение с регламентом');
+        add(card, 'p', 'Применён ответ службы качества. Причина: ' + result.conflict.reason);
+        for (const excerpt of result.conflict.excerpts) add(card, 'blockquote', excerpt);
+      }
+      if (result.mail_state === 'sent') add(card, 'p', 'Письмо принято локальным Mailpit.', 'source');
+      if (result.mail_state === 'failed' || result.mail_state === 'sending') {
+        add(card, 'p', 'Доставка письма пока не подтверждена. Обращение сохранено.', 'source');
+      }
       if (result.case_id) add(card, 'p', `Запрос № ${result.case_id}`, 'source');
       turn = result.turn || null;
       form.question.value = '';

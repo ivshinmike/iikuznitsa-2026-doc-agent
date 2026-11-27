@@ -141,3 +141,113 @@ class WorkflowTest(unittest.TestCase):
                 db.execute("UPDATE passages SET revision='v2'")
             self.assertEqual(ask(client, original)["status"], "missing")
             self.assertEqual(ask(client, alternative)["status"], "missing")
+
+    def test_review_can_override_existing_regulation_with_visible_provenance(self):
+        question = "Кто назначает ответственного исполнителя заявки?"
+        request = dict(question=question, unit="technical")
+        headers = {"X-Quality-Key": "test-reviewer-key"}
+        answer = {"status": "answer", "sources": [{"point": "2.1", "quote": self.quote}]}
+        with patch.object(application, "DATABASE", self.database), patch.dict("os.environ", {
+            "IIKUZNITSA_QUALITY_KEY": "test-reviewer-key", "IIKUZNITSA_QUALITY_REVIEWER": "Эксперт теста",
+            "IIKUZNITSA_MAILPIT_SMTP_PORT": "",
+        }), patch.object(application, "answer", return_value=answer) as generator, TestClient(application.app) as client:
+            self.assertEqual(client.post("/ask", json=request).json()["status"], "answer")
+            self.assertEqual(client.post("/quality/review", json=request).status_code, 403)
+            cross_scope = dict(request, question="Кто назначает исполнителя в Дирекции ИБ?")
+            self.assertEqual(client.post("/quality/review", json=cross_scope, headers=headers).status_code, 400)
+            case = client.post("/quality/review", json=request, headers=headers).json()["case_id"]
+            review = dict(case_id=case, resolution="Исполнителя назначает руководитель группы.",
+                          document="Синтетический регламент", point="2.1",
+                          reviewer="Попытка подмены", conflict_note="Действует решение эксперта до актуализации пункта.")
+            self.assertEqual(client.post("/quality/approve", json=review).status_code, 403)
+            with patch.dict("os.environ", {"IIKUZNITSA_QUALITY_REVIEWER": ""}):
+                self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 400)
+            self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 200)
+            result = client.post("/ask", json=request).json()
+            self.assertEqual(result["status"], "approved")
+            self.assertIn("руководитель", result["answer"])
+            self.assertEqual(result["reviewer"], "Эксперт теста")
+            self.assertIsNotNone(result["approved_at"])
+            self.assertEqual(result["applicability"]["revision"], "v1")
+            self.assertEqual(result["applicability"]["subdivision"], "Техническая дирекция")
+            self.assertEqual(result["conflict"], {"reason": review["conflict_note"], "excerpts": [self.quote]})
+            self.assertEqual(generator.call_count, 1)
+            self.assertIsNone(find_approval(self.database, question, "security"))
+            with connect(self.database) as db:
+                db.execute("UPDATE passages SET revision='v2'")
+            self.assertEqual(client.post("/ask", json=request).json()["status"], "answer")
+
+    def test_two_ambiguous_inputs_do_not_query_the_model(self):
+        def unexpected(*_):
+            self.fail("No single applicable subdivision was established")
+        pending = resolve(self.database, "Когда нужно согласовать заявку?", None, None, unexpected)
+        pending = resolve(self.database, "Не знаю подразделение", None, pending["turn"], unexpected)
+        result = resolve(self.database, "Не могу уточнить", None, pending["turn"], unexpected)
+        self.assertEqual(result["status"], "missing")
+        self.assertNotIn("sources", result)
+
+    def test_mail_is_claimed_once_and_failure_preserves_case(self):
+        request = dict(question="Как попасть на экскурсию?", unit="technical")
+        with patch.object(application, "DATABASE", self.database), patch.dict(
+            "os.environ", {"IIKUZNITSA_MAILPIT_SMTP_PORT": "1025"}
+        ), patch("src.quality_mail.smtplib.SMTP", side_effect=ConnectionRefusedError) as smtp, TestClient(application.app) as client:
+            result = client.post("/ask", json=request).json()
+            duplicate = client.post("/ask", json=request).json()
+            self.assertEqual(result["status"], "missing")
+            self.assertEqual(duplicate["case_id"], result["case_id"])
+            self.assertEqual(result["mail_state"], "failed")
+            self.assertEqual(duplicate["mail_state"], "failed")
+            smtp.assert_called_once_with("127.0.0.1", 1025, timeout=2)
+
+    def test_ingest_accepts_an_unseen_docx_and_ignores_another_unit(self):
+        from json import dumps
+        from zipfile import ZipFile
+        from src.corpus import ingest, search
+        path = Path(self.folder.name)
+        with ZipFile(path / "new.docx", "w") as archive:
+            archive.writestr("word/document.xml", """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:body><w:p><w:r><w:t>1. Калибровка маяка</w:t></w:r></w:p>
+            <w:p><w:r><w:t>1.3. Старший техник проверяет маяк до запуска.</w:t></w:r></w:p></w:body></w:document>""")
+        manifest = path / "corpus.json"
+        manifest.write_text(dumps([{"file": "new.docx", "unit": "technical", "title": "Новый синтетический порядок"}]),
+                            encoding="utf-8")
+        self.assertEqual(ingest(self.database, manifest), (1, 2))
+        found = search(self.database, "Кто проверяет маяк?", "technical")
+        self.assertEqual(found[0]["point"], "1.3")
+        self.assertFalse(search(self.database, "Кто проверяет маяк?", "security"))
+
+    def test_legacy_quality_schema_preserves_preexisting_data(self):
+        legacy = Path(self.folder.name) / "legacy.sqlite"
+        prepare(legacy)
+        with connect(legacy) as db:
+            db.execute("""CREATE TABLE quality_cases (id TEXT PRIMARY KEY, unit TEXT NOT NULL, question TEXT NOT NULL,
+                question_key TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                approved_at TEXT, resolution TEXT, document TEXT, point TEXT, heading TEXT, revision TEXT,
+                UNIQUE(unit, question_key))""")
+            db.execute("INSERT INTO quality_cases (id, unit, question, question_key) VALUES ('legacy','technical','test','test')")
+        prepare_quality(legacy)
+        prepare_quality(legacy)
+        self.assertEqual(open_case(legacy, "test", "technical"), "legacy")
+        with connect(legacy) as db:
+            self.assertEqual(db.execute("SELECT reviewer, conflict_note, mail_state FROM quality_cases").fetchone()[:],
+                             (None, None, None))
+
+
+
+    def test_lookalike_clauses_keep_their_own_numbers_and_department(self):
+        other = "Координатор назначает ответственного исполнителя до проверки заявки."
+        with connect(self.database) as db:
+            db.execute("INSERT INTO passages VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                " ".join(terms(other)), other, "security", "Синтетический порядок ИБ",
+                "2.1", "Назначение", "v1",
+            ))
+        question = "Кто назначает ответственного исполнителя заявки?"
+
+        def select(_, candidates):
+            self.assertEqual(len(candidates), 1)
+            return {"status": "answer", "selections": [{"id": candidates[0]["id"], "quote": candidates[0]["body"]}]}
+
+        for unit, expected in (("technical", self.quote), ("security", other)):
+            result = answer(self.database, question, unit, select)
+            quote, = result["sources"]
+            self.assertEqual((quote["unit"], quote["point"], quote["quote"]), (unit, "2.1", expected))

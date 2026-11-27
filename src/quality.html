@@ -17,6 +17,19 @@
     <input id="case-id" pattern="[0-9a-f]{32}" required>
     <button>Открыть запрос</button>
   </form>
+  <details>
+    <summary>Проверить ответ, который уже есть в регламенте</summary>
+    <form id="new-case">
+      <label for="review-unit">Подразделение</label>
+      <select id="review-unit" required>
+        <option value="dbrct">ДБРЦТ</option><option value="security">Дирекция ИБ</option>
+        <option value="technical">Техническая дирекция</option>
+      </select>
+      <label for="review-question">Вопрос для проверки</label>
+      <input id="review-question" minlength="2" maxlength="1400" required>
+      <button>Создать запрос на проверку</button>
+    </form>
+  </details>
   <div id="status" role="status"></div>
   <form id="review" hidden>
     <p id="original"></p>
@@ -27,6 +40,9 @@
     <label for="alternative">Альтернативная формулировка</label>
     <input id="alternative" maxlength="1400" aria-describedby="alternative-hint">
     <p id="alternative-hint">Необязательно. Укажите вопрос с тем же смыслом для этого подразделения.</p>
+    <label for="conflict-note">Причина расхождения с регламентом</label>
+    <textarea id="conflict-note" rows="2" minlength="5" maxlength="1000" aria-describedby="conflict-hint"></textarea>
+    <p id="conflict-hint">Заполните, если подтверждённый ответ имеет приоритет над связанным пунктом. Причину увидит пользователь.</p>
     <button>Подтвердить и добавить в базу знаний</button>
   </form>
 </main>
@@ -43,28 +59,46 @@
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Проверьте заполнение полей.');
     return data;
   }
-  get('lookup').addEventListener('submit', async (event) => {
+  async function openCase(id) {
+    const data = await request('/quality/case/' + id);
+    opened = data.case.id;
+    get('case-id').value = opened;
+    get('original').textContent = data.case.question;
+    const options = data.points.map((point) => new Option(
+      point.document + ' · п. ' + point.point, JSON.stringify(point),
+    ));
+    get('point').replaceChildren(new Option('Выберите пункт', ''), ...options);
+    for (const option of options) {
+      const item = JSON.parse(option.value);
+      if (item.document === data.case.document && item.point === data.case.point) get('point').value = option.value;
+    }
+    get('resolution').value = data.case.resolution || '';
+    get('alternative').value = data.case.alternative || '';
+    get('conflict-note').value = data.case.conflict_note || '';
+    status.textContent = data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
+    review.hidden = false;
+  }
+  async function loadCase(event, getId) {
     event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
+    const button = event.target.querySelector('button');
     button.disabled = true;
-    review.hidden = true;
     opened = null;
+    review.hidden = true;
     try {
-      const data = await request(`/quality/case/${get('case-id').value}`);
-      opened = data.case.id;
-      get('original').textContent = data.case.question;
-      const options = data.points.map((point) => new Option(`${point.document} · п. ${point.point}`, JSON.stringify(point)));
-      get('point').replaceChildren(new Option('Выберите пункт', ''), ...options);
-      get('resolution').value = data.case.resolution || '';
-      get('alternative').value = data.case.alternative || '';
-      status.textContent = data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
-      review.hidden = false;
+      await openCase(await getId());
     } catch (error) {
       status.textContent = error.message;
     } finally {
       button.disabled = false;
     }
-  });
+  }
+  get('lookup').addEventListener('submit', (event) => loadCase(event, () => get('case-id').value.trim()));
+  get('new-case').addEventListener('submit', (event) => loadCase(event, async () => {
+    const data = await request('/quality/review', {
+      question: get('review-question').value.trim(), unit: get('review-unit').value,
+    });
+    return data.case_id;
+  }));
   review.addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = review.querySelector('button');
@@ -74,6 +108,7 @@
       await request('/quality/approve', {
         case_id: opened, document, point, resolution: get('resolution').value,
         alternative: get('alternative').value.trim() || null,
+        conflict_note: get('conflict-note').value.trim() || null,
       });
       status.textContent = 'Ответ подтверждён и добавлен в локальную базу знаний.';
       review.hidden = true;
