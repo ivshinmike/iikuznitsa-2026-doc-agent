@@ -19,14 +19,14 @@
     <label for="question">Ваш вопрос</label>
     <textarea id="question" rows="3" maxlength="1400" minlength="2" required></textarea>
     <button type="submit">Найти ответ</button>
-    <button type="button" class="reset" id="reset" hidden>Новый вопрос</button>
+    <button type="button" class="reset" id="new-question" hidden>Новый вопрос</button>
   </form>
   <section id="result" aria-live="polite"></section>
 </main>
 <script>
   const form = document.querySelector('#ask');
   const output = document.querySelector('#result');
-  const reset = document.querySelector('#reset');
+  const reset = document.querySelector('#new-question');
   let turn = null;
   function add(parent, tag, text, className) {
     const item = document.createElement(tag);
@@ -58,8 +58,7 @@
       }
       if (result.conflict) {
         add(card, 'h3', 'Есть расхождение с регламентом');
-        add(card, 'p', 'Применён ответ службы качества. Причина: ' + result.conflict.reason);
-        for (const excerpt of result.conflict.excerpts) add(card, 'blockquote', excerpt);
+        add(card, 'p', 'Действующий пункт сохраняет силу. Предложение передано на дополнительное согласование.');
       }
       if (result.mail_state === 'sent') add(card, 'p', 'Письмо принято локальным Mailpit.', 'source');
       if (result.mail_state === 'failed' || result.mail_state === 'sending') {

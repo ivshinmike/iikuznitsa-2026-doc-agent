@@ -9,7 +9,7 @@ from src import app as application
 from src.answers import answer
 from src.corpus import connect, numbered, prepare, terms
 from src.dialogue import prepare_dialogue, resolve
-from src.quality import approve, find_approval, open_case, prepare_quality
+from src.quality import approve, find_knowledge, open_case, prepare_quality
 
 
 class WorkflowTest(unittest.TestCase):
@@ -76,15 +76,15 @@ class WorkflowTest(unittest.TestCase):
         question = "Какой номер у справочной службы?"
         case = open_case(self.database, question, "technical")
         self.assertEqual(open_case(self.database, question.upper(), "technical"), case)
-        self.assertIsNone(find_approval(self.database, question, "technical"))
+        self.assertIsNone(find_knowledge(self.database, question, "technical"))
         with self.assertRaises(ValueError):
             approve(self.database, case, "Тестовый ответ", "Другой регламент", "2.1")
         approve(self.database, case, "Тестовый ответ", "Синтетический регламент", "2.1")
-        self.assertEqual(find_approval(self.database, question.upper(), "technical")["answer"], "Тестовый ответ")
-        self.assertIsNone(find_approval(self.database, question, "security"))
+        self.assertEqual(find_knowledge(self.database, question.upper(), "technical")["resolution"], "Тестовый ответ")
+        self.assertIsNone(find_knowledge(self.database, question, "security"))
         with connect(self.database) as db:
             db.execute("UPDATE passages SET revision='v2'")
-        self.assertIsNone(find_approval(self.database, question, "technical"))
+        self.assertIsNone(find_knowledge(self.database, question, "technical"))
 
     def test_http_question_user_cannot_open_or_approve_quality_case(self):
         question = "Где взять билет на экскурсию?"
@@ -142,7 +142,7 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(ask(client, original)["status"], "missing")
             self.assertEqual(ask(client, alternative)["status"], "missing")
 
-    def test_review_can_override_existing_regulation_with_visible_provenance(self):
+    def test_conflict_creates_a_pending_case_and_preserves_the_current_rule(self):
         question = "Кто назначает ответственного исполнителя заявки?"
         request = dict(question=question, unit="technical")
         headers = {"X-Quality-Key": "test-reviewer-key"}
@@ -150,7 +150,7 @@ class WorkflowTest(unittest.TestCase):
         with patch.object(application, "DATABASE", self.database), patch.dict("os.environ", {
             "IIKUZNITSA_QUALITY_KEY": "test-reviewer-key", "IIKUZNITSA_QUALITY_REVIEWER": "Эксперт теста",
             "IIKUZNITSA_MAILPIT_SMTP_PORT": "",
-        }), patch.object(application, "answer", return_value=answer) as generator, TestClient(application.app) as client:
+        }), patch.object(application, "answer", return_value=answer), TestClient(application.app) as client:
             self.assertEqual(client.post("/ask", json=request).json()["status"], "answer")
             self.assertEqual(client.post("/quality/review", json=request).status_code, 403)
             cross_scope = dict(request, question="Кто назначает исполнителя в Дирекции ИБ?")
@@ -158,24 +158,74 @@ class WorkflowTest(unittest.TestCase):
             case = client.post("/quality/review", json=request, headers=headers).json()["case_id"]
             review = dict(case_id=case, resolution="Исполнителя назначает руководитель группы.",
                           document="Синтетический регламент", point="2.1",
-                          reviewer="Попытка подмены", conflict_note="Действует решение эксперта до актуализации пункта.")
+                          reviewer="Попытка подмены", conflict_note="Предложение требует согласования.")
             self.assertEqual(client.post("/quality/approve", json=review).status_code, 403)
-            with patch.dict("os.environ", {"IIKUZNITSA_QUALITY_REVIEWER": ""}):
-                self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 400)
-            self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 200)
+            sent = client.post("/quality/approve", json=review, headers=headers)
+            self.assertEqual(sent.status_code, 200)
+            self.assertEqual(sent.json(), {"status": "escalated", "case_id": case})
             result = client.post("/ask", json=request).json()
-            self.assertEqual(result["status"], "approved")
-            self.assertIn("руководитель", result["answer"])
-            self.assertEqual(result["reviewer"], "Эксперт теста")
-            self.assertIsNotNone(result["approved_at"])
-            self.assertEqual(result["applicability"]["revision"], "v1")
-            self.assertEqual(result["applicability"]["subdivision"], "Техническая дирекция")
-            self.assertEqual(result["conflict"], {"reason": review["conflict_note"], "excerpts": [self.quote]})
-            self.assertEqual(generator.call_count, 1)
-            self.assertIsNone(find_approval(self.database, question, "security"))
+            self.assertEqual(result["status"], "answer")
+            self.assertNotIn("answer", result)
+            self.assertEqual(result["sources"], answer["sources"])
+            self.assertEqual(result["case_id"], case)
+            self.assertIs(result["conflict"], True)
+            details = client.get(f"/quality/case/{case}", headers=headers).json()["case"]
+            self.assertEqual(details["reviewer"], "Эксперт теста")
+            self.assertIsNone(details["approved_at"])
+            self.assertIsNotNone(details["escalated_at"])
+            self.assertEqual(details["resolution"], review["resolution"])
+            self.assertEqual(client.post("/quality/approve", json=review, headers=headers).status_code, 409)
+            self.assertIsNone(find_knowledge(self.database, question, "security"))
             with connect(self.database) as db:
                 db.execute("UPDATE passages SET revision='v2'")
-            self.assertEqual(client.post("/ask", json=request).json()["status"], "answer")
+            self.assertNotIn("conflict", client.post("/ask", json=request).json())
+
+    def test_unmarked_and_legacy_conflicts_do_not_replace_the_three_day_rule(self):
+        quote = "Заявку следует инициировать не менее чем за 3 рабочих дня."
+        question = "За сколько рабочих дней нужно инициировать заявку?"
+        proposal = "Заявку следует инициировать не менее чем за 5 рабочих дней."
+        alternate = "Какой срок подачи?"
+        with connect(self.database) as db:
+            db.execute("INSERT INTO passages VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                " ".join(terms(quote)), quote, "dbrct", "Синтетический порядок", "1.5", "Срок", "v1",
+            ))
+        official = {"status": "answer", "sources": [{"point": "1.5", "quote": quote}]}
+
+        def evidence(_, text, __):
+            return official if text == question else {"status": "missing"}
+
+        case = open_case(self.database, question, "dbrct")
+        review = dict(case_id=case, resolution=proposal, document="Синтетический порядок", point="1.5")
+        headers = {"X-Quality-Key": "test-reviewer-key"}
+        with patch.object(application, "DATABASE", self.database), patch.object(
+            application, "answer", side_effect=evidence,
+        ), patch.dict("os.environ", {"IIKUZNITSA_QUALITY_KEY": "test-reviewer-key"}), TestClient(application.app) as client:
+            self.assertEqual(client.post("/quality/approve", json=review, headers=headers).json()["status"], "escalated")
+            with connect(self.database) as db:
+                db.execute("""UPDATE quality_cases SET conflict_note=NULL, escalated_at=NULL,
+                    approved_at=CURRENT_TIMESTAMP WHERE id=?""", (case,))
+                db.execute("INSERT INTO quality_aliases VALUES (?, ?, ?, ?)",
+                           ("dbrct", "какой срок подачи", alternate, case))
+            for wording in (alternate, question):
+                result = client.post("/ask", json={"question": wording, "unit": "dbrct"}).json()
+                self.assertIs(result["conflict"], True)
+                self.assertNotIn("5 рабочих", str(result))
+                self.assertIn("3 рабочих", str(result))
+            self.assertIsNone(find_knowledge(self.database, question, "dbrct")["approved_at"])
+
+    def test_legacy_marked_override_and_unavailable_model_keep_the_linked_rule(self):
+        question = "Кто назначает ответственного исполнителя заявки?"
+        case = open_case(self.database, question, "technical")
+        approve(self.database, case, "Проверяем старое предложение", "Синтетический регламент", "2.1")
+        with connect(self.database) as db:
+            db.execute("UPDATE quality_cases SET conflict_note='Старое расхождение' WHERE id=?", (case,))
+        prepare_quality(self.database)
+        with patch.object(application, "answer", return_value={"status": "unavailable"}):
+            result = application.with_quality(self.database, question, "technical")
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(result["sources"][0]["quote"], self.quote)
+        self.assertEqual(result["case_id"], case)
+        self.assertNotIn("answer", result)
 
     def test_two_ambiguous_inputs_do_not_query_the_model(self):
         def unexpected(*_):

@@ -35,15 +35,15 @@
     <p id="original"></p>
     <label for="point">Связанный пункт регламента</label>
     <select id="point" required></select>
-    <label for="resolution">Подтверждённый ответ</label>
+    <label for="resolution" id="resolution-label">Подтверждённый ответ</label>
     <textarea id="resolution" rows="5" minlength="5" maxlength="3000" required></textarea>
     <label for="alternative">Альтернативная формулировка</label>
     <input id="alternative" maxlength="1400" aria-describedby="alternative-hint">
     <p id="alternative-hint">Необязательно. Укажите вопрос с тем же смыслом для этого подразделения.</p>
     <label for="conflict-note">Причина расхождения с регламентом</label>
     <textarea id="conflict-note" rows="2" minlength="5" maxlength="1000" aria-describedby="conflict-hint"></textarea>
-    <p id="conflict-hint">Заполните, если подтверждённый ответ имеет приоритет над связанным пунктом. Причину увидит пользователь.</p>
-    <button>Подтвердить и добавить в базу знаний</button>
+    <p id="conflict-hint">Укажите причину расхождения для дополнительного согласования.</p>
+    <button id="review-submit">Подтвердить и добавить в базу знаний</button>
   </form>
 </main>
 <script>
@@ -51,6 +51,10 @@
   const review = get('review');
   const status = get('status');
   let opened = null;
+  get('conflict-note').addEventListener('input', () => {
+    get('review-submit').textContent = get('conflict-note').value.trim()
+      ? 'Передать на дополнительное согласование' : 'Подтвердить и добавить в базу знаний';
+  });
   async function request(path, body) {
     const headers = {'X-Quality-Key': get('key').value};
     if (body) headers['Content-Type'] = 'application/json';
@@ -75,7 +79,14 @@
     get('resolution').value = data.case.resolution || '';
     get('alternative').value = data.case.alternative || '';
     get('conflict-note').value = data.case.conflict_note || '';
-    status.textContent = data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
+    status.textContent = data.case.escalated_at ? 'Запрос ожидает дополнительного согласования.'
+      : data.case.approved_at ? 'Сохранённый ответ подтверждён.' : 'Запрос ожидает подтверждения.';
+    get('resolution-label').textContent = data.case.escalated_at
+      ? 'Предложение эксперта (ожидает согласования)' : 'Подтверждённый ответ';
+    get('conflict-note').dispatchEvent(new Event('input'));
+    for (const field of review.querySelectorAll('input, select, textarea, button')) {
+      field.disabled = Boolean(data.case.escalated_at);
+    }
     review.hidden = false;
   }
   async function loadCase(event, getId) {
@@ -105,12 +116,14 @@
     button.disabled = true;
     try {
       const {document, point} = JSON.parse(get('point').value);
-      await request('/quality/approve', {
+      const result = await request('/quality/approve', {
         case_id: opened, document, point, resolution: get('resolution').value,
         alternative: get('alternative').value.trim() || null,
         conflict_note: get('conflict-note').value.trim() || null,
       });
-      status.textContent = 'Ответ подтверждён и добавлен в локальную базу знаний.';
+      status.textContent = result.status === 'escalated'
+        ? 'Запрос передан на дополнительное согласование. Действующий пункт сохранён.'
+        : 'Ответ подтверждён и добавлен в локальную базу знаний.';
       review.hidden = true;
     } catch (error) {
       status.textContent = error.message;

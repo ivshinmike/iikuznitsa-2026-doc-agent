@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 from .answers import answer
 from .corpus import UNITS, normalize, prepare
 from .dialogue import infer_unit, prepare_dialogue, resolve
-from .quality import approve, find_approval, get_case, open_case, prepare_quality
+from .quality import (
+    approve, find_knowledge, get_case, hold_approval, open_case, prepare_quality, published_answer, question_key,
+)
 from .quality_mail import notify
 
 
@@ -44,10 +46,27 @@ class ReviewQuestion(BaseModel):
 
 
 def with_quality(database, question, unit):
-    existing = find_approval(database, question, unit)
-    if existing:
-        return existing
     result = answer(database, question, unit)
+    existing = find_knowledge(database, question, unit)
+    if existing:
+        if result["status"] == "answer" and existing["approved_at"]:
+            hold_approval(database, existing)
+        elif existing["approved_at"] and result["status"] == "missing":
+            canonical = result
+            if question_key(question) != existing["question_key"]:
+                canonical = answer(database, existing["question"], unit)
+            if canonical["status"] == "missing":
+                return published_answer(existing)
+            if canonical["status"] != "answer":
+                return canonical
+            hold_approval(database, existing)
+            result = canonical
+        elif existing["approved_at"]:
+            return result
+        if result["status"] != "answer":
+            result = {"status": "conflict", "message": "Связанный действующий пункт регламента",
+                      "sources": existing["sources"]}
+        return {**result, "case_id": existing["id"], "conflict": True}
     if result["status"] == "missing":
         result["case_id"] = open_case(database, question, unit)
         result["message"] = "В регламентах нет подтверждённого ответа. Запрос в службу качества создан."
@@ -109,12 +128,27 @@ def confirm_review(review: Review, x_quality_key: str | None = Header(default=No
     check_reviewer(x_quality_key)
     try:
         reviewer = normalize(os.environ.get("IIKUZNITSA_QUALITY_REVIEWER") or "") or "Служба качества"
-        approve(DATABASE, review.case_id, review.resolution, review.document, review.point, review.alternative,
-                reviewer=reviewer, conflict_note=review.conflict_note)
+        reason = normalize(review.conflict_note or "")
+        if not reason:
+            case = get_case(DATABASE, review.case_id)["case"]
+            questions = [case["question"]]
+            if review.alternative and question_key(review.alternative) != question_key(case["question"]):
+                if infer_unit(review.alternative) - {case["unit"]}:
+                    raise ValueError("Альтернативная формулировка должна относиться к тому же подразделению")
+                questions.append(review.alternative)
+            for question in questions:
+                status = answer(DATABASE, question, case["unit"])["status"]
+                if status == "answer":
+                    reason = "В действующем регламенте найден ответ. Предложение требует дополнительного согласования."
+                    break
+                if status != "missing":
+                    raise HTTPException(409, "Сначала проверьте, можно ли однозначно ответить по действующему регламенту")
+        status = approve(DATABASE, review.case_id, review.resolution, review.document, review.point, review.alternative,
+                         reviewer=reviewer, conflict_note=reason)
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
     except FileExistsError as error:
         raise HTTPException(409, str(error)) from error
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    return {"status": "approved", "case_id": review.case_id}
+    return {"status": status, "case_id": review.case_id}
