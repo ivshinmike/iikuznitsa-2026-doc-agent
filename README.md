@@ -54,7 +54,8 @@ python -m uvicorn src.app:app --host localhost --port 8001
 
 ## Материалы демонстрации
 
-Ссылки на видео и расчёт стоимости добавляются после проверки доступа к файлам.
+- [Демонстрационное видео — MP4, 2:48](https://drive.google.com/file/d/1VpjAF2D_YNhrz0XLX9akLmUZXjDWMQdI/view)
+- [Скачать официальный расчёт стоимости — Excel](https://drive.google.com/uc?export=download&id=1SrP1guDwOTWyMi6JHgF60I1IZfZuvp2-)
 
 ## Лицензии и зависимости
 
